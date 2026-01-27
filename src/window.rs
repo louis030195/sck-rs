@@ -161,10 +161,11 @@ impl Window {
     /// Check if the window is focused
     ///
     /// Note: ScreenCaptureKit doesn't directly provide focus state.
-    /// This would need to be determined through other means.
+    /// Returns true if the window is on screen as a reasonable proxy.
     pub fn is_focused(&self) -> XCapResult<bool> {
-        // TODO: Implement focus detection via NSWorkspace
-        Ok(false)
+        // Use is_on_screen as proxy for focus since SCK doesn't expose focus state
+        // This allows screenpipe to capture on-screen windows
+        Ok(self.is_on_screen)
     }
 
     /// Check if the window is on screen
