@@ -1,5 +1,6 @@
 //! Monitor/Display capture using ScreenCaptureKit via cidre
 
+use cidre::cg;
 use image::RgbaImage;
 use tracing::debug;
 

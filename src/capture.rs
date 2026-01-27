@@ -1,6 +1,6 @@
 //! Core capture functionality using ScreenCaptureKit via cidre
 
-use cidre::{cg, cv, ns, sc};
+use cidre::{cv, ns, sc};
 use image::RgbaImage;
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
@@ -227,10 +227,9 @@ async fn capture_monitor_async(monitor_id: u32, width: u32, height: u32) -> XCap
 
     // Find the display
     let displays = content.displays();
-    let target_id = cg::DirectDisplayId(monitor_id);
     let display = displays
         .iter()
-        .find(|d| d.display_id() == target_id)
+        .find(|d| d.display_id() == monitor_id)
         .ok_or_else(|| XCapError::monitor_not_found(monitor_id))?;
 
     // Create content filter for this display (excluding no windows)
