@@ -8,7 +8,7 @@ use tracing::debug;
 
 use crate::error::{XCapError, XCapResult};
 
-/// Global tokio runtime for blocking on async operations
+/// Global tokio runtime for blocking on async operations (only used when not in an existing runtime)
 static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -17,24 +17,45 @@ static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
 });
 
 /// Run an async operation synchronously using the global runtime
+///
+/// Note: This must be called from outside a tokio runtime context.
+/// For use within async code, use the async capture functions directly.
 pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
     RUNTIME.block_on(f)
 }
 
+/// Run a sync closure in a separate thread to avoid nested runtime issues
+pub fn run_in_thread<F, T>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    std::thread::spawn(f).join().expect("Thread panicked")
+}
+
 /// Get shareable content synchronously
 pub fn get_shareable_content() -> XCapResult<cidre::arc::R<sc::ShareableContent>> {
-    block_on(async {
-        sc::ShareableContent::current()
-            .await
-            .map_err(|e| {
-                let err_str = format!("{:?}", e);
-                if err_str.contains("permission") || err_str.contains("denied") || err_str.contains("-3801") {
-                    XCapError::permission_denied()
-                } else {
-                    XCapError::capture_failed(format!("Failed to get shareable content: {}", err_str))
-                }
-            })
-    })
+    let fetch = || {
+        block_on(async {
+            sc::ShareableContent::current()
+                .await
+                .map_err(|e| {
+                    let err_str = format!("{:?}", e);
+                    if err_str.contains("permission") || err_str.contains("denied") || err_str.contains("-3801") {
+                        XCapError::permission_denied()
+                    } else {
+                        XCapError::capture_failed(format!("Failed to get shareable content: {}", err_str))
+                    }
+                })
+        })
+    };
+
+    // If we're in a tokio runtime, run in a separate thread to avoid nested runtime panic
+    if tokio::runtime::Handle::try_current().is_ok() {
+        run_in_thread(fetch)
+    } else {
+        fetch()
+    }
 }
 
 /// Extract an RGBA image from a cv::ImageBuf (pixel buffer)
@@ -113,7 +134,12 @@ fn image_buf_to_rgba(image_buf: &mut cv::ImageBuf) -> XCapResult<RgbaImage> {
 /// This captures the display containing the window and crops to the window bounds.
 /// This approach works reliably for all window types.
 pub fn capture_window_sync(window_id: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
-    block_on(capture_window_async(window_id, width, height))
+    // If we're in a tokio runtime, run in a separate thread to avoid nested runtime panic
+    if tokio::runtime::Handle::try_current().is_ok() {
+        run_in_thread(move || block_on(capture_window_async(window_id, width, height)))
+    } else {
+        block_on(capture_window_async(window_id, width, height))
+    }
 }
 
 /// Async version of window capture
@@ -215,7 +241,12 @@ async fn capture_window_async(window_id: u32, _width: u32, _height: u32) -> XCap
 
 /// Capture a single frame from a monitor using ScreenCaptureKit
 pub fn capture_monitor_sync(monitor_id: u32, width: u32, height: u32) -> XCapResult<RgbaImage> {
-    block_on(capture_monitor_async(monitor_id, width, height))
+    // If we're in a tokio runtime, run in a separate thread to avoid nested runtime panic
+    if tokio::runtime::Handle::try_current().is_ok() {
+        run_in_thread(move || block_on(capture_monitor_async(monitor_id, width, height)))
+    } else {
+        block_on(capture_monitor_async(monitor_id, width, height))
+    }
 }
 
 /// Async version of monitor capture
