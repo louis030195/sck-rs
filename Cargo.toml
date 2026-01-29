@@ -17,8 +17,8 @@ path = "src/lib.rs"
 image = "0.25"
 
 # Apple frameworks bindings (pure Rust, no Swift)
-# Using mediar-ai fork for compatibility with screenpipe dependencies
-cidre = { git = "https://github.com/mediar-ai/cidre.git", features = ["sc", "cg", "cv", "cm", "dispatch", "blocks", "async"] }
+# Using upstream cidre - includes SCContentFilter initializers from PR #51
+cidre = { git = "https://github.com/yury/cidre.git", features = ["sc", "cg", "cv", "cm", "dispatch", "blocks", "async"] }
 
 # Error handling
 thiserror = "1.0"

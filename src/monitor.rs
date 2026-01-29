@@ -44,14 +44,15 @@ impl Monitor {
         }
 
         // Find the primary display (usually the first one, or has origin at 0,0)
+        // Note: display_id() returns DirectDisplayId, use .0 to get the u32 value
         let primary_id = displays
             .iter()
             .find(|d| {
                 let frame = d.frame();
                 frame.origin.x == 0.0 && frame.origin.y == 0.0
             })
-            .map(|d| d.display_id())
-            .unwrap_or_else(|| displays.first().map(|d| d.display_id()).unwrap_or(0));
+            .map(|d| d.display_id().0)
+            .unwrap_or_else(|| displays.first().map(|d| d.display_id().0).unwrap_or(0));
 
         let monitors: Vec<Monitor> = displays
             .iter()
@@ -59,10 +60,10 @@ impl Monitor {
                 let frame = d.frame();
                 let width = d.width() as u32;
                 let height = d.height() as u32;
-                let display_id = d.display_id();
+                let display_id = d.display_id().0; // Extract u32 from DirectDisplayId
 
                 debug!(
-                    "Found display {:?}: {}x{} at ({}, {})",
+                    "Found display {}: {}x{} at ({}, {})",
                     display_id, width, height, frame.origin.x, frame.origin.y
                 );
 

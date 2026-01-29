@@ -260,7 +260,7 @@ async fn capture_monitor_async(monitor_id: u32, width: u32, height: u32) -> XCap
     let displays = content.displays();
     let display = displays
         .iter()
-        .find(|d| d.display_id() == monitor_id)
+        .find(|d| d.display_id().0 == monitor_id)
         .ok_or_else(|| XCapError::monitor_not_found(monitor_id))?;
 
     // Create content filter for this display (excluding no windows)
