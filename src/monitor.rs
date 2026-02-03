@@ -72,8 +72,23 @@ impl Monitor {
                 // Get actual physical pixel dimensions from Core Graphics
                 // CGDisplayPixelsWide/High return the actual framebuffer resolution
                 let cg_display = CGDisplay::new(display_id);
-                let physical_width = cg_display.pixels_wide() as u32;
-                let physical_height = cg_display.pixels_high() as u32;
+                let raw_physical_width = cg_display.pixels_wide() as u32;
+                let raw_physical_height = cg_display.pixels_high() as u32;
+                
+                // Check display rotation - CGDisplayRotation returns 0, 90, 180, or 270 degrees
+                // For vertical/portrait monitors (rotated 90° or 270°), we need to swap dimensions
+                // because CGDisplayPixelsWide/High return the native panel dimensions,
+                // not the rotated screen dimensions that ScreenCaptureKit expects
+                let rotation = cg_display.rotation();
+                let is_rotated = (rotation - 90.0).abs() < 1.0 || (rotation - 270.0).abs() < 1.0;
+                
+                let (physical_width, physical_height) = if is_rotated {
+                    // Swap dimensions for 90° or 270° rotation (vertical/portrait monitors)
+                    (raw_physical_height, raw_physical_width)
+                } else {
+                    // Keep original dimensions for 0° or 180° rotation
+                    (raw_physical_width, raw_physical_height)
+                };
                 
                 // Calculate scale factor from physical vs logical dimensions
                 // For Retina displays, this will be 2.0; for standard displays, 1.0
@@ -88,8 +103,9 @@ impl Monitor {
                 };
 
                 debug!(
-                    "Found display {}: physical={}x{}, logical={}x{}, scale={:.2}, at ({}, {})",
-                    display_id, physical_width, physical_height, 
+                    "Found display {}: physical={}x{} (raw={}x{}, rotation={}°), logical={}x{}, scale={:.2}, at ({}, {})",
+                    display_id, physical_width, physical_height,
+                    raw_physical_width, raw_physical_height, rotation,
                     logical_width, logical_height, scale_factor,
                     frame.origin.x, frame.origin.y
                 );
