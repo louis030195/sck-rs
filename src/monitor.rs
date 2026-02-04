@@ -1,6 +1,6 @@
 //! Monitor/Display capture using ScreenCaptureKit via cidre
 
-use core_graphics::display::CGDisplay;
+use cidre::cg;
 use image::RgbaImage;
 use tracing::debug;
 
@@ -20,9 +20,9 @@ pub struct Monitor {
     x: i32,
     /// Display Y position
     y: i32,
-    /// Display width in physical pixels (actual framebuffer resolution)
+    /// Display width in pixels used for capture (SCK dimensions)
     width: u32,
-    /// Display height in physical pixels (actual framebuffer resolution)
+    /// Display height in pixels used for capture (SCK dimensions)
     height: u32,
     /// Logical width (what macOS reports for UI layout)
     logical_width: u32,
@@ -49,7 +49,6 @@ impl Monitor {
         }
 
         // Find the primary display (usually the first one, or has origin at 0,0)
-        // Note: display_id() returns DirectDisplayId, use .0 to get the u32 value
         let primary_id = displays
             .iter()
             .find(|d| {
@@ -63,41 +62,24 @@ impl Monitor {
             .iter()
             .map(|d| {
                 let frame = d.frame();
-                let display_id = d.display_id().0; // Extract u32 from DirectDisplayId
-                
-                // Get dimensions from multiple sources for comparison
-                let cg_display = CGDisplay::new(display_id);
-                
-                // Source 1: ScreenCaptureKit's reported dimensions (what SCK thinks the display is)
+                let display_id = d.display_id().0;
+
+                // SCK dimensions (what SCK expects for capture)
                 let sck_width = d.width() as u32;
                 let sck_height = d.height() as u32;
-                
-                // Source 2: ScreenCaptureKit frame size (should match above)
-                let frame_width = frame.size.width as u32;
-                let frame_height = frame.size.height as u32;
-                
-                // Source 3: CGDisplayPixelsWide/High (native panel resolution)
-                let cg_pixels_width = cg_display.pixels_wide() as u32;
-                let cg_pixels_height = cg_display.pixels_high() as u32;
-                
-                // Source 4: CGDisplayBounds (current display mode, respects scaling)
-                let cg_bounds = cg_display.bounds();
+
+                // Use cidre's CGDirectDisplayId for native pixel info
+                let cg_id = cg::DirectDisplayId(display_id);
+                let cg_pixels_width = cg_id.pixels_wide() as u32;
+                let cg_pixels_height = cg_id.pixels_high() as u32;
+                let cg_bounds = cg_id.bounds();
                 let cg_bounds_width = cg_bounds.size.width as u32;
                 let cg_bounds_height = cg_bounds.size.height as u32;
-                
-                // Check display rotation
-                let rotation = cg_display.rotation();
-                let is_rotated = (rotation - 90.0).abs() < 1.0 || (rotation - 270.0).abs() < 1.0;
-                
-                // IMPORTANT: Use ScreenCaptureKit's dimensions for capture
-                // SCK knows what dimensions it expects - using physical pixels causes issues
-                // when user has display scaling (e.g., "More Space" or "Larger Text")
-                // 
-                // For the capture, we use SCK dimensions (logical * backing scale factor)
-                // SCK handles the actual pixel capture internally
+
+                // Use SCK dimensions for capture
                 let (capture_width, capture_height) = (sck_width, sck_height);
-                
-                // Calculate scale factor (for informational purposes)
+
+                // Calculate scale factor
                 let scale_factor = if sck_width > 0 && sck_height > 0 {
                     let width_scale = cg_pixels_width as f64 / sck_width as f64;
                     let height_scale = cg_pixels_height as f64 / sck_height as f64;
@@ -107,13 +89,11 @@ impl Monitor {
                 };
 
                 debug!(
-                    "Display {} dimensions - SCK: {}x{}, Frame: {}x{}, CGPixels: {}x{}, CGBounds: {}x{}, rotation: {}°, using: {}x{}",
+                    "Display {} dimensions - SCK: {}x{}, CGPixels: {}x{}, CGBounds: {}x{}, using: {}x{}",
                     display_id,
                     sck_width, sck_height,
-                    frame_width, frame_height,
                     cg_pixels_width, cg_pixels_height,
                     cg_bounds_width, cg_bounds_height,
-                    rotation,
                     capture_width, capture_height
                 );
 
@@ -122,7 +102,6 @@ impl Monitor {
                     name: format!("Display {}", display_id),
                     x: frame.origin.x as i32,
                     y: frame.origin.y as i32,
-                    // Use SCK's dimensions - it knows what it expects
                     width: capture_width,
                     height: capture_height,
                     logical_width: cg_bounds_width,
@@ -196,7 +175,6 @@ impl Monitor {
     }
 
     /// Get the scale factor (for Retina displays)
-    /// This is the ratio of physical pixels to logical pixels
     pub fn scale_factor(&self) -> f64 {
         self.scale_factor
     }
@@ -225,9 +203,9 @@ mod tests {
             name: "Test Display".to_string(),
             x: 0,
             y: 0,
-            width: 3840,      // Physical pixels (4K)
+            width: 3840,
             height: 2160,
-            logical_width: 1920,  // Logical pixels (what UI sees)
+            logical_width: 1920,
             logical_height: 1080,
             scale_factor: 2.0,
             is_primary: true,
@@ -249,7 +227,6 @@ mod tests {
 
     #[test]
     fn test_monitor_all() {
-        // This test verifies the API works
         let result = Monitor::all();
         let _ = result;
     }

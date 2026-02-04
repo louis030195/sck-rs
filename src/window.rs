@@ -1,106 +1,25 @@
 //! Window capture using ScreenCaptureKit via cidre
 
-use core_foundation::base::{CFType, TCFType};
-use core_foundation::dictionary::CFDictionaryRef;
-use core_foundation::number::CFNumber;
-use core_foundation::string::CFString;
-use core_graphics::window::{
-    kCGNullWindowID, kCGWindowListOptionOnScreenOnly, kCGWindowListExcludeDesktopElements,
-    CGWindowListCopyWindowInfo,
-};
+use cidre::ns;
 use image::RgbaImage;
-use std::collections::HashMap;
 use tracing::debug;
 
-use crate::capture;
-use crate::error::{XCapError, XCapResult};
-
-/// Get window info from CGWindowList API as a fallback
-/// Returns a HashMap of window_id -> (app_name, title, pid)
-fn get_cgwindow_info() -> HashMap<u32, (String, String, i32)> {
-    let mut info = HashMap::new();
-
-    unsafe {
-        let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
-        let window_list = CGWindowListCopyWindowInfo(options, kCGNullWindowID);
-
-        if window_list.is_null() {
-            return info;
-        }
-
-        let cf_array = core_foundation::array::CFArray::<CFType>::wrap_under_create_rule(
-            window_list as core_foundation::array::CFArrayRef
-        );
-        let count = cf_array.len();
-
-        for i in 0..count {
-            if let Some(dict) = cf_array.get(i) {
-                let dict_ref = dict.as_CFTypeRef() as CFDictionaryRef;
-
-                // Get window ID
-                let window_id = get_cf_number_value(dict_ref, "kCGWindowNumber").unwrap_or(-1);
-                if window_id <= 0 {
-                    continue;
-                }
-
-                // Get owner name (app name)
-                let owner_name = get_cf_string_value(dict_ref, "kCGWindowOwnerName")
-                    .unwrap_or_default();
-
-                // Get window name (title)
-                let window_name = get_cf_string_value(dict_ref, "kCGWindowName")
-                    .unwrap_or_default();
-
-                // Get owner PID
-                let owner_pid = get_cf_number_value(dict_ref, "kCGWindowOwnerPID").unwrap_or(-1);
-
-                info.insert(window_id as u32, (owner_name, window_name, owner_pid));
+/// Get the PID of the frontmost application using cidre's NSWorkspace API.
+fn get_frontmost_pid() -> i32 {
+    let workspace = ns::Workspace::shared();
+    let apps = workspace.running_apps();
+    for i in 0..apps.len() {
+        if let Ok(app) = apps.get(i) {
+            if app.is_active() {
+                return app.pid();
             }
         }
     }
-
-    info
+    -1
 }
 
-/// Get a string value from a CFDictionary
-fn get_cf_string_value(dict: CFDictionaryRef, key: &str) -> Option<String> {
-    unsafe {
-        let cf_key = CFString::new(key);
-        let mut value: *const std::ffi::c_void = std::ptr::null();
-
-        let found = core_foundation::dictionary::CFDictionaryGetValueIfPresent(
-            dict,
-            cf_key.as_concrete_TypeRef() as *const _,
-            &mut value,
-        );
-        if found != 0 && !value.is_null() {
-            let cf_string = CFString::wrap_under_get_rule(value as core_foundation::string::CFStringRef);
-            Some(cf_string.to_string())
-        } else {
-            None
-        }
-    }
-}
-
-/// Get a number value from a CFDictionary
-fn get_cf_number_value(dict: CFDictionaryRef, key: &str) -> Option<i32> {
-    unsafe {
-        let cf_key = CFString::new(key);
-        let mut value: *const std::ffi::c_void = std::ptr::null();
-
-        let found = core_foundation::dictionary::CFDictionaryGetValueIfPresent(
-            dict,
-            cf_key.as_concrete_TypeRef() as *const _,
-            &mut value,
-        );
-        if found != 0 && !value.is_null() {
-            let cf_number = CFNumber::wrap_under_get_rule(value as core_foundation::number::CFNumberRef);
-            cf_number.to_i32()
-        } else {
-            None
-        }
-    }
-}
+use crate::capture;
+use crate::error::{XCapError, XCapResult};
 
 /// Represents a capturable window
 ///
@@ -125,6 +44,10 @@ pub struct Window {
     height: u32,
     /// Whether the window is on screen
     is_on_screen: bool,
+    /// Whether the owning application is the frontmost/active app
+    is_app_active: bool,
+    /// The window layer (0 = normal, >0 = overlay/floating/panel)
+    window_layer: isize,
 }
 
 impl Window {
@@ -141,36 +64,29 @@ impl Window {
             return Err(XCapError::no_windows());
         }
 
-        // Get CGWindow info as fallback for when SCK doesn't provide app metadata
-        let cgwindow_info = get_cgwindow_info();
+        // Get the frontmost app PID once for all windows
+        let frontmost_pid = get_frontmost_pid();
 
         let windows: Vec<Window> = sc_windows
             .iter()
             .filter_map(|w| {
-                let window_id = w.id();
-
-                // Get window properties from SCK first
-                let title = w.title()
+                // Get window properties
+                let title = w
+                    .title()
                     .map(|s| s.to_string())
                     .unwrap_or_default();
 
-                let (mut app_name, mut pid) = match w.owning_app() {
-                    Some(app) => (app.app_name().to_string(), app.process_id()),
+                let (app_name, pid) = match w.owning_app() {
+                    Some(app) => (
+                        app.app_name().to_string(),
+                        app.process_id(),
+                    ),
                     None => (String::new(), -1),
                 };
+                let is_app_active = pid >= 0 && pid == frontmost_pid;
 
-                // Fallback to CGWindow API if SCK didn't provide app info
-                if app_name.is_empty() || pid < 0 {
-                    if let Some((cg_app_name, _cg_title, cg_pid)) = cgwindow_info.get(&window_id) {
-                        if app_name.is_empty() && !cg_app_name.is_empty() {
-                            debug!("Using CGWindow fallback for app_name: {} -> {}", window_id, cg_app_name);
-                            app_name = cg_app_name.clone();
-                        }
-                        if pid < 0 && *cg_pid >= 0 {
-                            pid = *cg_pid;
-                        }
-                    }
-                }
+                // Get window layer (0 = normal, >0 = overlay/floating)
+                let window_layer = w.window_layer();
 
                 // Get window frame
                 let frame = w.frame();
@@ -184,12 +100,13 @@ impl Window {
                 }
 
                 debug!(
-                    "Found window: id={}, app={}, title={}, {}x{} at ({}, {})",
-                    window_id, app_name, title, width, height, frame.origin.x, frame.origin.y
+                    "Found window: id={}, app={}, title={}, {}x{} at ({}, {}), layer={}, active={}",
+                    w.id(), app_name, title, width, height, frame.origin.x, frame.origin.y,
+                    window_layer, is_app_active
                 );
 
                 Some(Window {
-                    window_id,
+                    window_id: w.id(),
                     app_name,
                     title,
                     pid,
@@ -198,6 +115,8 @@ impl Window {
                     width,
                     height,
                     is_on_screen: w.is_on_screen(),
+                    is_app_active,
+                    window_layer,
                 })
             })
             .collect();
@@ -271,17 +190,28 @@ impl Window {
 
     /// Check if the window is focused
     ///
-    /// Note: ScreenCaptureKit doesn't directly provide focus state.
-    /// Returns true if the window is on screen as a reasonable proxy.
+    /// A window is considered focused if:
+    /// 1. Its owning app is the frontmost/active application
+    /// 2. Its window layer is 0 (normal level, not a floating overlay)
+    ///
+    /// This prevents always-on-top overlay apps (like Wispr Flow, Bartender)
+    /// from being reported as focused when their floating status windows
+    /// happen to belong to the "active" app.
     pub fn is_focused(&self) -> XCapResult<bool> {
-        // Use is_on_screen as proxy for focus since SCK doesn't expose focus state
-        // This allows screenpipe to capture on-screen windows
-        Ok(self.is_on_screen)
+        Ok(self.is_app_active && self.window_layer == 0)
     }
 
     /// Check if the window is on screen
     pub fn is_on_screen(&self) -> bool {
         self.is_on_screen
+    }
+
+    /// Get the window layer level
+    ///
+    /// Layer 0 = normal app window
+    /// Layer > 0 = floating panel, overlay, status item, etc.
+    pub fn window_layer(&self) -> isize {
+        self.window_layer
     }
 
     /// Capture an image of the window
@@ -308,6 +238,8 @@ mod tests {
             width: 800,
             height: 600,
             is_on_screen: true,
+            is_app_active: true,
+            window_layer: 0,
         };
 
         assert_eq!(window.id().unwrap(), 123);
@@ -321,6 +253,46 @@ mod tests {
         assert_eq!(window.height().unwrap(), 600);
         assert!(!window.is_minimized().unwrap());
         assert!(window.is_on_screen());
+        assert!(window.is_focused().unwrap());
+    }
+
+    #[test]
+    fn test_overlay_window_not_focused() {
+        let window = Window {
+            window_id: 1,
+            app_name: "Wispr Flow".to_string(),
+            title: "Status".to_string(),
+            pid: 100,
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 50,
+            is_on_screen: true,
+            is_app_active: true,  // App is frontmost...
+            window_layer: 3isize, // ...but window is an overlay
+        };
+
+        // Should NOT be considered focused because layer > 0
+        assert!(!window.is_focused().unwrap());
+    }
+
+    #[test]
+    fn test_inactive_app_not_focused() {
+        let window = Window {
+            window_id: 2,
+            app_name: "Background App".to_string(),
+            title: "Main".to_string(),
+            pid: 200,
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+            is_on_screen: true,
+            is_app_active: false, // Not the frontmost app
+            window_layer: 0,     // Normal window level
+        };
+
+        assert!(!window.is_focused().unwrap());
     }
 
     #[test]
@@ -334,7 +306,9 @@ mod tests {
             y: 0,
             width: 100,
             height: 100,
-            is_on_screen: false, // Not on screen = minimized
+            is_on_screen: false,
+            is_app_active: false,
+            window_layer: 0,
         };
 
         assert!(window.is_minimized().unwrap());
